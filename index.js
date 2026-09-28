@@ -18,9 +18,7 @@ const client = new Client({
 
 const commands = [new SlashCommandBuilder().setName("dmsupport").setDescription("Configure et gère Tokina DM Support")
   .addSubcommand(c => c.setName("setup").setDescription("Configure le support")
-    .addChannelOption(o => o.setName("categorie").setDescription("Catégorie des tickets").addChannelTypes(ChannelType.GuildCategory).setRequired(true))
-    .addRoleOption(o => o.setName("role_staff").setDescription("Rôle autorisé à répondre").setRequired(true))
-    .addChannelOption(o => o.setName("salon_logs").setDescription("Salon des journaux").addChannelTypes(ChannelType.GuildText)))
+    .addRoleOption(o => o.setName("role_staff").setDescription("Rôle autorisé à répondre").setRequired(true)))
   .addSubcommand(c => c.setName("statut").setDescription("Affiche la configuration"))
   .addSubcommand(c => c.setName("fermer").setDescription("Ferme le ticket actuel"))].map(command => command.toJSON());
 
@@ -58,7 +56,7 @@ function channelName(user) {
 async function targetGuild() {
   for (const [id, config] of Object.entries(store.data.guilds)) {
     const guild = client.guilds.cache.get(id);
-    if (guild && config.categoryId && config.staffRoleId) return { guild, config };
+    if (guild && config.staffRoleId) return { guild, config };
   }
   return null;
 }
@@ -73,8 +71,24 @@ async function openTicket(user, reasonKey) {
   const target = await targetGuild();
   if (!target) throw new Error("Support non configuré.");
   const { guild, config } = target;
+  let category = config.categoryId && await guild.channels.fetch(config.categoryId).catch(() => null);
+  if (!category || category.type !== ChannelType.GuildCategory) {
+    category = guild.channels.cache.find(channel => channel.type === ChannelType.GuildCategory && channel.name === "DM・SUPPORT");
+  }
+  if (!category) {
+    category = await guild.channels.create({
+      name: "DM・SUPPORT",
+      type: ChannelType.GuildCategory,
+      permissionOverwrites: [
+        { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: config.staffRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+        { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] }
+      ]
+    });
+  }
+  store.setGuild(guild.id, { categoryId: category.id });
   const channel = await guild.channels.create({
-    name: channelName(user), type: ChannelType.GuildText, parent: config.categoryId,
+    name: channelName(user), type: ChannelType.GuildText, parent: category.id,
     topic: "DM Support • " + user.tag + " • " + user.id,
     permissionOverwrites: [
       { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -96,7 +110,21 @@ async function closeTicket(ticket, actor) {
   store.close(ticket.userId);
   if (user) await user.send({ embeds: [new EmbedBuilder().setColor(COLOR).setTitle("Demande fermée").setDescription("Ton ticket a été fermé. Tu peux renvoyer un message à Tokina si tu as encore besoin d’aide.")] }).catch(() => {});
   if (guild) await log(guild, "Ticket de <@" + ticket.userId + "> fermé par **" + actor.tag + "**.");
-  if (channel) { await channel.send("Ticket fermé. Suppression dans 5 secondes.").catch(() => {}); setTimeout(() => channel.delete("Ticket DM fermé").catch(() => {}), 5000).unref?.(); }
+  if (channel) {
+    await channel.send("Ticket fermé. Suppression dans 5 secondes.").catch(() => {});
+    const timer = setTimeout(async () => {
+      await channel.delete("Ticket DM fermé").catch(() => {});
+      const hasOpenTicket = Object.values(store.data.tickets).some(item => item.guildId === ticket.guildId && item.open);
+      if (hasOpenTicket) return;
+      const currentConfig = store.guild(ticket.guildId);
+      const category = currentConfig?.categoryId && await guild.channels.fetch(currentConfig.categoryId).catch(() => null);
+      if (category?.type === ChannelType.GuildCategory && category.children.cache.size === 0) {
+        await category.delete("Dernier ticket DM fermé").catch(() => {});
+        store.setGuild(ticket.guildId, { categoryId: null });
+      }
+    }, 5000);
+    timer.unref?.();
+  }
 }
 async function toTicket(message, ticket) {
   const guild = client.guilds.cache.get(ticket.guildId);
@@ -153,14 +181,16 @@ client.on(Events.InteractionCreate, async interaction => {
   }
   if (!canConfigure(interaction.member)) return interaction.reply({ content: "Tu n’as pas accès à cette commande.", ephemeral: true });
   if (action === "setup") {
-    const category = interaction.options.getChannel("categorie", true);
     const role = interaction.options.getRole("role_staff", true);
-    const logs = interaction.options.getChannel("salon_logs");
-    store.setGuild(interaction.guildId, { categoryId: category.id, staffRoleId: role.id, logChannelId: logs?.id || null });
-    return interaction.reply({ content: "Support configuré dans **" + category.name + "** pour " + role.toString() + ".", ephemeral: true });
+    const previous = store.guild(interaction.guildId);
+    const oldCategory = previous?.categoryId && await interaction.guild.channels.fetch(previous.categoryId).catch(() => null);
+    const hasOpenTicket = Object.values(store.data.tickets).some(item => item.guildId === interaction.guildId && item.open);
+    if (oldCategory?.type === ChannelType.GuildCategory && !hasOpenTicket && oldCategory.children.cache.size === 0) await oldCategory.delete("Aucun ticket DM ouvert").catch(() => {});
+    store.setGuild(interaction.guildId, { categoryId: hasOpenTicket ? oldCategory?.id || null : null, staffRoleId: role.id, logChannelId: null });
+    return interaction.reply({ content: "Support configuré pour " + role.toString() + ". La catégorie sera créée automatiquement au premier ticket.", ephemeral: true });
   }
   const config = store.guild(interaction.guildId);
-  return interaction.reply({ content: config ? "Catégorie : <#" + config.categoryId + ">\nRôle staff : <@&" + config.staffRoleId + ">\nLogs : " + (config.logChannelId ? "<#" + config.logChannelId + ">" : "désactivés") : "Support non configuré.", ephemeral: true, allowedMentions: { parse: [] } });
+  return interaction.reply({ content: config ? "Rôle staff : <@&" + config.staffRoleId + ">\nCatégorie actuelle : " + (config.categoryId ? "<#" + config.categoryId + ">" : "aucune — créée au prochain ticket") : "Support non configuré.", ephemeral: true, allowedMentions: { parse: [] } });
 });
 client.login(token);
 

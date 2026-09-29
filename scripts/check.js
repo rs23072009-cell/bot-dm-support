@@ -6,7 +6,7 @@ console.log("Structure du bot DM Support valide.");
 
 
 const source = fs.readFileSync("index.js", "utf8");
-for (const feature of ["modifier-panel", "tester-panel", "dmsupport:welcome-edit", "setName(\"pole\")", "reasonRoles"]) {
+for (const feature of ["modifier-panel", "tester-panel", "dmsupport:welcome-edit", "setName(\"pole\")", "reasonRoles", "setName(\"add\")", "setName(\"remove\")", "setName(\"del\")", "setName(\"rename\")", "setName(\"close\")", "canManageTicket"]) {
   if (!source.includes(feature)) {
     console.error("Fonctionnalité DM Support manquante : " + feature);
     process.exit(1);

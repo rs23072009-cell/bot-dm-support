@@ -16,7 +16,7 @@ const client = new Client({
   partials: [Partials.Channel]
 });
 
-const commands = [new SlashCommandBuilder().setName("dmsupport").setDescription("Configure et gère Tokina DM Support")
+const supportCommand = new SlashCommandBuilder().setName("dmsupport").setDescription("Configure et gère Tokina DM Support")
   .addSubcommand(c => c.setName("setup").setDescription("Configure le support")
     .addRoleOption(o => o.setName("role_staff").setDescription("Rôle autorisé à répondre").setRequired(true)))
   .addSubcommand(c => c.setName("pole").setDescription("Associer un motif de demande à un rôle")
@@ -30,7 +30,17 @@ const commands = [new SlashCommandBuilder().setName("dmsupport").setDescription(
   .addSubcommand(c => c.setName("modifier-panel").setDescription("Modifier le panneau d'accueil envoyé en DM"))
   .addSubcommand(c => c.setName("tester-panel").setDescription("Prévisualiser le panneau d'accueil sur le serveur"))
   .addSubcommand(c => c.setName("statut").setDescription("Affiche la configuration"))
-  .addSubcommand(c => c.setName("fermer").setDescription("Ferme le ticket actuel"))].map(command => command.toJSON());
+  .addSubcommand(c => c.setName("fermer").setDescription("Ferme le ticket actuel"));
+const memberOption = command => command.addStringOption(o => o.setName("personne")
+  .setDescription("Mention ou identifiant Discord").setMinLength(2).setMaxLength(30).setRequired(true));
+const addCommand = memberOption(new SlashCommandBuilder().setName("add").setDescription("Ajouter une personne au ticket DM"));
+const removeCommand = memberOption(new SlashCommandBuilder().setName("remove").setDescription("Retirer une personne du ticket DM"));
+const delCommand = memberOption(new SlashCommandBuilder().setName("del").setDescription("Retirer une personne du ticket DM"));
+const renameCommand = new SlashCommandBuilder().setName("rename").setDescription("Renommer le ticket DM")
+  .addStringOption(o => o.setName("nom").setDescription("Nouveau nom").setMinLength(1).setMaxLength(90).setRequired(true));
+const closeCommand = new SlashCommandBuilder().setName("close").setDescription("Fermer le ticket DM");
+const commands = [supportCommand, addCommand, removeCommand, delCommand, renameCommand, closeCommand]
+  .map(command => command.toJSON());
 
 const reasons = {
   aide: { label: "Besoin d’aide", emoji: "🛟" },
@@ -41,6 +51,20 @@ const reasons = {
 
 function canConfigure(member) {
   return owners.has(member.id) || member.id === member.guild.ownerId || member.permissions.has(PermissionFlagsBits.Administrator);
+}
+function canManageTicket(member, ticket, config) {
+  if (!member || !ticket || !config) return false;
+  if (canConfigure(member)) return true;
+  const poleRoleId = config.reasonRoles?.[ticket.reason] || config.staffRoleId;
+  return member.roles.cache.has(config.staffRoleId) || member.roles.cache.has(poleRoleId);
+}
+async function resolveMember(guild, raw) {
+  const id = String(raw || "").match(/\d{17,20}/)?.[0];
+  return id ? guild.members.fetch(id).catch(() => null) : null;
+}
+function safeChannelName(value) {
+  return value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 90) || "dm-support";
 }
 const DEFAULT_WELCOME_PANEL = {
   title: "Tokina — Besoin d’aide",
@@ -176,6 +200,39 @@ async function openTicket(user, reasonKey) {
   await log(guild, "Ticket ouvert pour **" + user.tag + "** dans " + channel.toString() + ".");
   return { current: false, ticket };
 }
+async function manageTicketCommand(interaction) {
+  const ticket = store.byChannel(interaction.channelId);
+  if (!ticket) {
+    return interaction.reply({ content: "Cette commande fonctionne uniquement dans un ticket DM ouvert.", ephemeral: true });
+  }
+  const config = store.guild(interaction.guildId);
+  if (!canManageTicket(interaction.member, ticket, config)) {
+    return interaction.reply({ content: "Seuls le pôle configuré, le staff général et les Owners peuvent gérer ce ticket.", ephemeral: true });
+  }
+  const command = interaction.commandName;
+  if (command === "close") {
+    await interaction.reply({ content: "Fermeture du ticket…", ephemeral: true });
+    return closeTicket(ticket, interaction.user);
+  }
+  if (command === "rename") {
+    const name = safeChannelName(interaction.options.getString("nom", true));
+    await interaction.channel.setName(name, "Ticket DM renommé par " + interaction.user.tag);
+    return interaction.reply({ content: "✅ Ticket renommé en **" + name + "**.", ephemeral: true });
+  }
+  const member = await resolveMember(interaction.guild, interaction.options.getString("personne", true));
+  if (!member) return interaction.reply({ content: "Membre introuvable. Utilise une mention ou son identifiant Discord.", ephemeral: true });
+  if (command === "add") {
+    await interaction.channel.permissionOverwrites.edit(member.id, {
+      ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true, EmbedLinks: true
+    }, { reason: "Ajout au ticket DM par " + interaction.user.tag });
+    return interaction.reply({ content: "✅ " + member.toString() + " a été ajouté au ticket.", allowedMentions: { parse: [] } });
+  }
+  await interaction.channel.permissionOverwrites.edit(member.id, {
+    ViewChannel: false, SendMessages: false
+  }, { reason: "Retrait du ticket DM par " + interaction.user.tag });
+  return interaction.reply({ content: "✅ " + member.toString() + " a été retiré du ticket.", allowedMentions: { parse: [] } });
+}
+
 async function closeTicket(ticket, actor) {
   const guild = client.guilds.cache.get(ticket.guildId);
   const channel = guild && await guild.channels.fetch(ticket.channelId).catch(() => null);
@@ -250,14 +307,26 @@ client.on(Events.InteractionCreate, async interaction => {
   if (interaction.isButton() && interaction.customId === "dmsupport:close") {
     const ticket = store.byChannel(interaction.channelId);
     if (!ticket) return interaction.reply({ content: "Ce ticket est déjà fermé.", ephemeral: true });
+    const config = store.guild(interaction.guildId);
+    if (!canManageTicket(interaction.member, ticket, config)) {
+      return interaction.reply({ content: "Tu n’as pas accès à ce ticket.", ephemeral: true });
+    }
     await interaction.reply({ content: "Fermeture du ticket…", ephemeral: true });
     return closeTicket(ticket, interaction.user);
   }
-  if (!interaction.isChatInputCommand() || interaction.commandName !== "dmsupport" || !interaction.guild) return;
+  if (!interaction.isChatInputCommand() || !interaction.guild) return;
+  if (["add", "remove", "del", "rename", "close"].includes(interaction.commandName)) {
+    return manageTicketCommand(interaction);
+  }
+  if (interaction.commandName !== "dmsupport") return;
   const action = interaction.options.getSubcommand();
   if (action === "fermer") {
     const ticket = store.byChannel(interaction.channelId);
     if (!ticket) return interaction.reply({ content: "Utilise cette commande dans un ticket.", ephemeral: true });
+    const config = store.guild(interaction.guildId);
+    if (!canManageTicket(interaction.member, ticket, config)) {
+      return interaction.reply({ content: "Tu n’as pas accès à ce ticket.", ephemeral: true });
+    }
     await interaction.reply({ content: "Fermeture du ticket…", ephemeral: true });
     return closeTicket(ticket, interaction.user);
   }

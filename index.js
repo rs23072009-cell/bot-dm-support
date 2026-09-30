@@ -50,7 +50,7 @@ const reasons = {
 };
 
 function canConfigure(member) {
-  return owners.has(member.id) || member.id === member.guild.ownerId || member.permissions.has(PermissionFlagsBits.Administrator);
+  return Boolean(member && owners.has(member.id));
 }
 function canManageTicket(member, ticket, config) {
   if (!member || !ticket || !config) return false;

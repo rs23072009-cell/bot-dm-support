@@ -66,21 +66,23 @@ function safeChannelName(value) {
   return value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 90) || "dm-support";
 }
-const DEFAULT_WELCOME_PANEL = {
-  title: "Tokina — Besoin d’aide",
-  description: [
-    "Merci d’avoir contacté **Tokina**. Une personne de l’équipe prendra en charge ta demande.",
-    "", "Il s’agit d’un humain qui va te répondre, merci de rester respectueux.", "",
-    "**Ta demande concerne quelle raison ?**", "Choisis une raison ci-dessous pour ouvrir un ticket."
-  ].join("\n"),
-  footer: ""
-};
-
-function welcomePanel(config) {
-  return { ...DEFAULT_WELCOME_PANEL, ...(config?.welcomePanel || {}) };
+function defaultWelcomePanel(guildName) {
+  return {
+    title: guildName + " — Besoin d’aide",
+    description: [
+      "Merci d’avoir contacté **" + guildName + "**. Une personne de l’équipe prendra en charge ta demande.",
+      "", "Il s’agit d’un humain qui va te répondre, merci de rester respectueux.", "",
+      "**Ta demande concerne quelle raison ?**", "Choisis une raison ci-dessous pour ouvrir un ticket."
+    ].join("\n"),
+    footer: ""
+  };
 }
-function welcomePayload(config, options = {}) {
-  const content = welcomePanel(config);
+
+function welcomePanel(config, guildName) {
+  return { ...defaultWelcomePanel(guildName), ...(config?.welcomePanel || {}) };
+}
+function welcomePayload(config, options = {}, guildName = "Serveur") {
+  const content = welcomePanel(config, guildName);
   const embed = new EmbedBuilder().setColor(COLOR).setTitle(content.title).setDescription(content.description);
   if (content.footer) embed.setFooter({ text: content.footer });
   const menu = new StringSelectMenuBuilder().setCustomId("dmsupport:reason").setPlaceholder("Choisis une raison")
@@ -89,7 +91,7 @@ function welcomePayload(config, options = {}) {
   return { embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)] };
 }
 async function showWelcomeEditor(interaction) {
-  const content = welcomePanel(store.guild(interaction.guildId));
+  const content = welcomePanel(store.guild(interaction.guildId), interaction.guild.name);
   const modal = new ModalBuilder().setCustomId("dmsupport:welcome-edit").setTitle("Modifier le panneau d’accueil")
     .addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId("title").setLabel("Titre")
@@ -113,14 +115,14 @@ async function saveWelcomeEditor(interaction) {
   store.setGuild(interaction.guildId, { welcomePanel });
   return interaction.reply({
     content: "✅ Panneau enregistré. Voici sa prévisualisation :",
-    ...welcomePayload({ welcomePanel }, { disabled: true }),
+    ...welcomePayload({ welcomePanel }, { disabled: true }, interaction.guild.name),
     ephemeral: true
   });
 }
-function ticketPayload(user, reason, roleId) {
+function ticketPayload(user, reason, roleId, guildName) {
   const close = new ButtonBuilder().setCustomId("dmsupport:close").setLabel("🔒 Fermer").setStyle(ButtonStyle.Danger);
   const embed = new EmbedBuilder().setColor(COLOR)
-    .setAuthor({ name: "Tokina • DM Support", iconURL: user.client.user.displayAvatarURL() })
+    .setAuthor({ name: guildName + " • DM Support", iconURL: user.client.user.displayAvatarURL() })
     .setTitle(`${reason.emoji} ${reason.label}`)
     .setDescription([
       `Bienvenue <@${user.id}> dans ton espace de support privé.`,
@@ -136,7 +138,7 @@ function ticketPayload(user, reason, roleId) {
       "> *En attente d’un membre du pôle*"
     ].join("\n"))
     .setThumbnail(user.displayAvatarURL({ extension: "png", size: 256 }))
-    .setFooter({ text: "Tokina • Support privé" })
+    .setFooter({ text: guildName + " • Support privé" })
     .setTimestamp();
   return { embeds: [embed], components: [new ActionRowBuilder().addComponents(close)] };
 }
@@ -192,7 +194,7 @@ async function openTicket(user, reasonKey) {
   });
   await channel.send({
     content: `🔔 <@&${poleRoleId}> • Nouvelle demande **${reason.label}**`,
-    ...ticketPayload(user, reason, poleRoleId),
+    ...ticketPayload(user, reason, poleRoleId, guild.name),
     allowedMentions: { roles: [poleRoleId] }
   });
   const ticket = { userId: user.id, guildId: guild.id, channelId: channel.id, reason: reasonKey, open: true, openedAt: Date.now() };
@@ -238,7 +240,7 @@ async function closeTicket(ticket, actor) {
   const channel = guild && await guild.channels.fetch(ticket.channelId).catch(() => null);
   const user = await client.users.fetch(ticket.userId).catch(() => null);
   store.close(ticket.userId);
-  if (user) await user.send({ embeds: [new EmbedBuilder().setColor(COLOR).setTitle("Demande fermée").setDescription("Ton ticket a été fermé. Tu peux renvoyer un message à Tokina si tu as encore besoin d’aide.")] }).catch(() => {});
+  if (user) await user.send({ embeds: [new EmbedBuilder().setColor(COLOR).setTitle("Demande fermée").setDescription("Ton ticket a été fermé. Tu peux renvoyer un message à " + guild.name + " si tu as encore besoin d’aide.")] }).catch(() => {});
   if (guild) await log(guild, "Ticket de <@" + ticket.userId + "> fermé par **" + actor.tag + "**.");
   if (channel) {
     await channel.send("Ticket fermé. Suppression dans 5 secondes.").catch(() => {});
@@ -262,7 +264,7 @@ async function toTicket(message, ticket) {
   if (!channel?.isTextBased()) {
     store.close(message.author.id);
     const target = await targetGuild();
-    return message.channel.send(welcomePayload(target?.config));
+    return message.channel.send(welcomePayload(target?.config, {}, target?.guild?.name || "Serveur"));
   }
   const files = [...message.attachments.values()].map(file => file.url);
   const embed = new EmbedBuilder().setColor(COLOR).setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() }).setDescription(message.content || "*Pièce jointe*").setTimestamp();
@@ -273,7 +275,7 @@ async function toUser(message, ticket) {
   const user = await client.users.fetch(ticket.userId).catch(() => null);
   if (!user) return;
   const files = [...message.attachments.values()].map(file => file.url);
-  const embed = new EmbedBuilder().setColor(COLOR).setAuthor({ name: "Équipe Tokina" }).setDescription(message.content || "*Pièce jointe*").setTimestamp();
+  const embed = new EmbedBuilder().setColor(COLOR).setAuthor({ name: "Équipe " + guild.name }).setDescription(message.content || "*Pièce jointe*").setTimestamp();
   await user.send({ embeds: [embed], files }).catch(() => message.reply("Impossible d’envoyer ce message : les DM du membre sont fermés."));
   await message.react("✅").catch(() => {});
 }
@@ -351,7 +353,7 @@ client.on(Events.InteractionCreate, async interaction => {
   if (action === "tester-panel") {
     return interaction.reply({
       content: "Prévisualisation du panneau envoyé en message privé :",
-      ...welcomePayload(store.guild(interaction.guildId), { disabled: true }),
+      ...welcomePayload(store.guild(interaction.guildId), { disabled: true }, interaction.guild.name),
       ephemeral: true
     });
   }

@@ -43,10 +43,26 @@ const commands = [supportCommand, addCommand, removeCommand, delCommand, renameC
   .map(command => command.toJSON());
 
 const reasons = {
-  aide: { label: "Besoin d’aide", emoji: "🛟" },
-  signalement: { label: "Signalement", emoji: "🚩" },
-  partenariat: { label: "Partenariat", emoji: "🤝" },
-  autre: { label: "Autre demande", emoji: "💬" }
+  aide: {
+    label: "Besoin d’aide",
+    emoji: "🛟",
+    description: "Une question, un problème ou une demande d’assistance."
+  },
+  signalement: {
+    label: "Signalement",
+    emoji: "🚩",
+    description: "Signaler un membre, un comportement ou un contenu problématique."
+  },
+  partenariat: {
+    label: "Partenariat",
+    emoji: "🤝",
+    description: "Proposer ou gérer un partenariat avec Tokina."
+  },
+  autre: {
+    label: "Autre demande",
+    emoji: "💬",
+    description: "Une demande qui ne correspond à aucune autre catégorie."
+  }
 };
 
 function canConfigure(member) {
@@ -87,7 +103,12 @@ function welcomePayload(config, options = {}, guildName = "Serveur") {
   if (content.footer) embed.setFooter({ text: content.footer });
   const menu = new StringSelectMenuBuilder().setCustomId("dmsupport:reason").setPlaceholder("Choisis une raison")
     .setDisabled(Boolean(options.disabled))
-    .addOptions(Object.entries(reasons).map(([value, item]) => ({ value, label: item.label, emoji: item.emoji })));
+    .addOptions(Object.entries(reasons).map(([value, item]) => ({
+      value,
+      label: item.label,
+      description: item.description,
+      emoji: item.emoji
+    })));
   return { embeds: [embed], components: [new ActionRowBuilder().addComponents(menu)] };
 }
 async function showWelcomeEditor(interaction) {
